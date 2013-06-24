@@ -1,0 +1,8 @@
+#BlueJ class context
+comment0.params=
+comment0.target=Steps()
+comment1.params=num
+comment1.target=Steps(int)
+comment2.params=
+comment2.target=void\ updateImage()
+numComments=3

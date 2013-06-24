@@ -1,0 +1,12 @@
+#BlueJ class context
+comment0.params=
+comment0.target=Hero()
+comment1.params=
+comment1.target=void\ act()
+comment2.params=eaten
+comment2.target=void\ killHero(boolean)
+comment3.params=
+comment3.target=void\ animateHero()
+comment4.params=
+comment4.target=void\ keepScore()
+numComments=5

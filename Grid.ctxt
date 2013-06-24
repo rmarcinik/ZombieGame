@@ -1,0 +1,17 @@
+#BlueJ class context
+comment0.params=
+comment0.target=Grid()
+comment0.text=\r\n\ Constructor\ for\ objects\ of\ class\ Grid.\r\n\ \r\n
+comment1.params=
+comment1.target=void\ makeZombies()
+comment2.params=
+comment2.target=Hero\ getHero()
+comment3.params=
+comment3.target=void\ startGame()
+comment4.params=
+comment4.target=void\ endGame()
+comment5.params=
+comment5.target=void\ winGame()
+comment6.params=number
+comment6.target=void\ makeZombies(int)
+numComments=7

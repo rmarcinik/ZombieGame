@@ -1,0 +1,10 @@
+#BlueJ class context
+comment0.params=
+comment0.target=ZombiePile()
+comment1.params=
+comment1.target=void\ act()
+comment2.params=b
+comment2.target=void\ removePile(boolean)
+comment3.params=
+comment3.target=void\ winCheck()
+numComments=4
