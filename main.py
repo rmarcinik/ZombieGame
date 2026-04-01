@@ -1,173 +1,169 @@
 import pygame, random, sys, os
+from dataclasses import dataclass, field
+from enum import Enum, auto
 
 CELL = 30
 COLS = ROWS = 20
 W = H = COLS * CELL
 ZOMBIE_DELAY = 140
-INTRO, PLAYING, WON, LOST = range(4) # TODO Enum?
-sign = lambda x: (1 if x > 0 else -1 if x < 0 else 0)
+
+class Mode(Enum):
+    INTRO = auto(); PLAYING = auto(); WON = auto(); LOST = auto()
+
+sign  = lambda x: (x > 0) - (x < 0)
+clamp = lambda v, lo, hi: max(lo, min(hi, v))
+px    = lambda pos: (pos[0] * CELL, pos[1] * CELL)
+
+KEYS = {pygame.K_LEFT: (-1, 0), pygame.K_RIGHT: (1, 0),
+        pygame.K_UP:   (0, -1), pygame.K_DOWN:  (0, 1)}
 
 
-def main():
-    pygame.init()
-    pygame.mixer.init()
-    screen = pygame.display.set_mode((W, H))
-    pygame.display.set_caption("Dead Escape")
-    clock = pygame.time.Clock()
+@dataclass
+class State:
+    mode:        Mode  = Mode.INTRO
+    hero:        list  = field(default_factory=lambda: [9, 9])
+    alive:       bool  = True
+    zombies:     list  = field(default_factory=list)
+    piles:       set   = field(default_factory=set)
+    steps:       int   = 0
+    z_q:         list  = field(default_factory=list)
+    z_timer:     int   = 0
+    prev_dir:    tuple = None
+    pending_dir: tuple = None
+    z_target:    tuple = (0, 0)
+    anim:        int   = 0
+    anim_t:      int   = 0
 
-    ROOT = os.path.dirname(os.path.abspath(__file__))
-    img  = lambda n: pygame.image.load(os.path.join(ROOT, "images", n)).convert_alpha()
-    snd  = lambda n: pygame.mixer.Sound(os.path.join(ROOT, "sounds", n))
 
-    bg = pygame.Surface((W, H))
+def load_assets(root):
+    img = lambda n: pygame.image.load(os.path.join(root, "images", n)).convert_alpha()
+    snd = lambda n: pygame.mixer.Sound(os.path.join(root, "sounds", n))
     tile = img("Cell.gif")
+    bg   = pygame.Surface((W, H))
     for r in range(ROWS):
         for c in range(COLS):
             bg.blit(tile, (c * CELL, r * CELL))
+    return (
+        dict(bg=bg, pile=img("ZombiePile2.gif"),
+             intro=img("introscreen.gif"), win=img("winscreen.gif"), over=img("gameover.png"),
+             hero  =[img("Hero.gif"),        img("Hero2.gif")],
+             dead  =[img("ZombieHero.gif"),  img("ZombieHero2.gif")],
+             zombie=[img("Zombie.gif"),       img("Zombie2.gif")],
+             font  =pygame.font.SysFont(None, 16)),
+        dict(die=snd("die.wav"), lose=snd("lose.wav"), win=snd("win.wav")),
+    )
 
-    hero_imgs   = [img("Hero.gif"),       img("Hero2.gif")]
-    dead_imgs   = [img("ZombieHero.gif"), img("ZombieHero2.gif")]
-    zombie_imgs = [img("Zombie.gif"),     img("Zombie2.gif")]
-    pile_img    = img("ZombiePile2.gif")
-    intro_img   = img("introscreen.gif")
-    win_img     = img("winscreen.gif")
-    over_img    = img("gameover.png")
 
-    snd_die  = snd("die.wav")
-    snd_lose = snd("lose.wav")
-    snd_win  = snd("win.wav")
+def new_game(s):
+    s.mode, s.alive, s.steps, s.z_timer = Mode.PLAYING, True, 0, 0
+    s.hero[:] = [9, 9]
+    s.zombies[:] = [[random.randrange(COLS), random.randrange(ROWS)] for _ in range(12)]
+    s.piles.clear(); s.z_q.clear()
+    s.prev_dir = s.pending_dir = None
 
-    font = pygame.font.SysFont(None, 16)
 
-    state      = INTRO
-    hero       = [9, 9]
-    hero_alive = True
-    zombies    = []
-    piles      = set()
-    steps      = 0
-    zombie_q   = []
-    z_timer    = 0
-    anim, anim_t = 0, 0
-    prev_dir   = None   # direction saved after last zombie turn; None = zombies skip
-    pending_dir = None  # direction pressed this turn, becomes prev_dir after zombies move
-    z_target   = (0, 0) # tile zombies chase this turn
+def move_zombie(s, z, snd_die):
+    z[0] = clamp(z[0] + sign(s.z_target[0] - z[0]), 0, COLS - 1)
+    z[1] = clamp(z[1] + sign(s.z_target[1] - z[1]), 0, ROWS - 1)
+    pos  = (z[0], z[1])
+    if pos == (s.hero[0], s.hero[1]):
+        return True
+    other = next((o for o in s.zombies if o is not z and (o[0], o[1]) == pos), None)
+    if other:
+        s.zombies[:] = [o for o in s.zombies if o is not z and o is not other]
+        s.piles.add(pos);   snd_die.play()
+    elif pos in s.piles:
+        s.zombies[:] = [o for o in s.zombies if o is not z]
+        s.piles.discard(pos); snd_die.play()
+    return False
 
-    def new_game():
-        nonlocal state, hero_alive, steps, z_timer, prev_dir, pending_dir
-        state = PLAYING
-        hero[:] = [9, 9]
-        hero_alive = True
-        zombies[:] = [[random.randrange(COLS), random.randrange(ROWS)] for _ in range(12)]
-        piles.clear()
-        zombie_q.clear()
-        steps = z_timer = 0
-        prev_dir = pending_dir = None
 
-    def move_zombie(z, target):
-        tx, ty = target
-        z[0] = max(0, min(COLS - 1, z[0] + sign(tx - z[0])))
-        z[1] = max(0, min(ROWS - 1, z[1] + sign(ty - z[1])))
-        pos = (z[0], z[1])
+def handle_input(s, event, snd):
+    if event.type == pygame.QUIT:
+        sys.exit()
+    if event.type != pygame.KEYDOWN:
+        return
+    if s.mode in (Mode.INTRO, Mode.WON, Mode.LOST):
+        new_game(s); return
+    if s.mode != Mode.PLAYING or s.z_q or not s.alive:
+        return
 
-        if pos == (hero[0], hero[1]):
-            return True
+    dx, dy = KEYS.get(event.key, (0, 0))
+    if event.key == pygame.K_SPACE:
+        s.hero[:] = [random.randrange(COLS), random.randrange(ROWS)]
+    elif not (dx or dy):
+        return
 
-        other = next((o for o in zombies if o is not z and o[0] == z[0] and o[1] == z[1]), None)
-        if other:                           # Z + Z → pile
-            zombies[:] = [o for o in zombies if o is not z and o is not other]
-            piles.add(pos)
-            snd_die.play()
-        elif pos in piles:                  # Z + pile → both gone
-            zombies[:] = [o for o in zombies if o is not z]
-            piles.discard(pos)
-            snd_die.play()
-        return False
+    old = (s.hero[0], s.hero[1])   # capture after possible teleport
+    if dx or dy:
+        s.hero[0] = clamp(s.hero[0] + dx, 0, COLS - 1)
+        s.hero[1] = clamp(s.hero[1] + dy, 0, ROWS - 1)
+        s.steps += 1
 
+    hpos = (s.hero[0], s.hero[1])
+    if any((z[0], z[1]) == hpos for z in s.zombies) or hpos in s.piles:
+        s.alive, s.mode = False, Mode.LOST
+        snd['lose'].play(); return
+
+    cur_dir = (dx, dy) if (dx or dy) else s.prev_dir
+    if s.prev_dir:
+        s.z_target    = (clamp(old[0] + s.prev_dir[0], 0, COLS-1),
+                         clamp(old[1] + s.prev_dir[1], 0, ROWS-1))
+        s.z_q[:]      = list(s.zombies)
+        s.pending_dir = cur_dir
+    else:
+        s.prev_dir = cur_dir
+
+
+def update(s, dt, snd):
+    s.anim_t += dt
+    if s.anim_t > 400:
+        s.anim ^= 1; s.anim_t = 0
+
+    if s.mode == Mode.PLAYING and s.z_q:
+        s.z_timer += dt
+        if s.z_timer >= ZOMBIE_DELAY:
+            s.z_timer = 0
+            z = s.z_q.pop(0)
+            if any(o is z for o in s.zombies) and move_zombie(s, z, snd['die']):
+                s.alive, s.mode = False, Mode.LOST
+                snd['lose'].play(); s.z_q.clear()
+        if not s.z_q and s.mode == Mode.PLAYING:
+            s.prev_dir = s.pending_dir
+            if not s.zombies:
+                snd['win'].play(); s.mode = Mode.WON
+
+
+def draw(screen, s, a):
+    screen.blit(a['bg'], (0, 0))
+    if s.mode != Mode.INTRO:
+        for pos in s.piles:
+            screen.blit(a['pile'], px(pos))
+        for z in s.zombies:
+            screen.blit(a['zombie'][s.anim], px(z))
+        screen.blit((a['hero'] if s.alive else a['dead'])[s.anim], px(s.hero))
+        screen.blit(a['font'].render(str(s.steps), True, (220, 220, 220)),
+                    (s.hero[0] * CELL + 18, s.hero[1] * CELL + 18))
+    overlay = {Mode.INTRO: 'intro', Mode.WON: 'win', Mode.LOST: 'over'}.get(s.mode)
+    if overlay:
+        img = a[overlay]
+        screen.blit(img, img.get_rect(center=(W//2, H//2)))
+    pygame.display.flip()
+
+
+def main():
+    pygame.init(); pygame.mixer.init()
+    screen = pygame.display.set_mode((W, H))
+    pygame.display.set_caption("Dead Escape")
+    clock  = pygame.time.Clock()
+    assets, snd = load_assets(os.path.dirname(os.path.abspath(__file__)))
+    s = State()
     while True:
         dt = clock.tick(60)
-        anim_t += dt
-        if anim_t > 400:
-            anim ^= 1
-            anim_t = 0
-
         for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                sys.exit()
-            if event.type == pygame.KEYDOWN:
-                if state in (INTRO, WON, LOST):
-                    new_game()
-                elif state == PLAYING and not zombie_q and hero_alive:
-                    dx = dy = 0
-                    moved = True
-                    if   event.key == pygame.K_LEFT:  dx = -1
-                    elif event.key == pygame.K_RIGHT: dx =  1
-                    elif event.key == pygame.K_UP:    dy = -1
-                    elif event.key == pygame.K_DOWN:  dy =  1
-                    elif event.key == pygame.K_SPACE:
-                        hero[:] = [random.randrange(COLS), random.randrange(ROWS)]
-                    else:
-                        moved = False
-
-                    if moved:
-                        old_pos = (hero[0], hero[1])
-                        if dx or dy:
-                            hero[0] = max(0, min(COLS - 1, hero[0] + dx))
-                            hero[1] = max(0, min(ROWS - 1, hero[1] + dy))
-                            steps += 1
-                        hpos = (hero[0], hero[1])
-                        if any(o[0] == hpos[0] and o[1] == hpos[1] for o in zombies) or hpos in piles:
-                            hero_alive = False
-                            snd_lose.play()
-                            state = LOST
-                        else:
-                            cur_dir = (dx, dy) if (dx or dy) else prev_dir
-                            if prev_dir:
-                                z_target = (
-                                    max(0, min(COLS - 1, old_pos[0] + prev_dir[0])),
-                                    max(0, min(ROWS - 1, old_pos[1] + prev_dir[1])),
-                                )
-                                zombie_q[:] = list(zombies)
-                                pending_dir = cur_dir   # saved after zombies finish
-                            else:
-                                prev_dir = cur_dir      # first move: no zombies, save now
-
-        if state == PLAYING and zombie_q:
-            z_timer += dt
-            if z_timer >= ZOMBIE_DELAY:
-                z_timer = 0
-                z = zombie_q.pop(0)
-                if any(o is z for o in zombies):
-                    if move_zombie(z, z_target):
-                        hero_alive = False
-                        snd_lose.play()
-                        state = LOST
-                        zombie_q.clear()
-            if not zombie_q and state == PLAYING:
-                prev_dir = pending_dir          # save direction after zombies finish
-                if not zombies:
-                    snd_win.play()
-                    state = WON
-
-        screen.blit(bg, (0, 0))
-
-        if state != INTRO:
-            for pos in piles:
-                screen.blit(pile_img, (pos[0] * CELL, pos[1] * CELL))
-            for z in zombies:
-                screen.blit(zombie_imgs[anim], (z[0] * CELL, z[1] * CELL))
-            hi = hero_imgs if hero_alive else dead_imgs
-            screen.blit(hi[anim], (hero[0] * CELL, hero[1] * CELL))
-            screen.blit(font.render(str(steps), True, (220, 220, 220)),
-                        (hero[0] * CELL + 18, hero[1] * CELL + 18))
-
-        if state == INTRO:
-            screen.blit(intro_img, intro_img.get_rect(center=(W // 2, H // 2)))
-        elif state == WON:
-            screen.blit(win_img,   win_img.get_rect(center=(W // 2, H // 2)))
-        elif state == LOST:
-            screen.blit(over_img,  over_img.get_rect(center=(W // 2, H // 2)))
-
-        pygame.display.flip()
+            handle_input(s, event, snd)
+        update(s, dt, snd)
+        draw(screen, s, assets)
 
 
 if __name__ == "__main__":
